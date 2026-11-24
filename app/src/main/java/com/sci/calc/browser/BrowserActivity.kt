@@ -316,6 +316,18 @@ class BrowserActivity : SecureActivity() {
             confirmDownload(dUrl, name, mime ?: "application/octet-stream", false, ua, tab.url)
         }
         wv.setOnLongClickListener { onLongPress(tab) }
+        var downX = 0f; var downY = 0f; var downAt = 0L
+        wv.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> { downX = ev.x; downY = ev.y; downAt = ev.eventTime }
+                android.view.MotionEvent.ACTION_UP -> {
+                    val slop = 24 * resources.displayMetrics.density
+                    val isTap = Math.abs(ev.x - downX) < slop && Math.abs(ev.y - downY) < slop && ev.eventTime - downAt < 600
+                    if (isTap) tab.lastTap = System.currentTimeMillis()
+                }
+            }
+            false
+        }
         if (url != null) load(tab, url)
         if (select) selectTab(tab)
         tabsBtn.text = tabs.size.toString()
@@ -536,7 +548,7 @@ class BrowserActivity : SecureActivity() {
     private fun showVideos() {
         val t = current ?: return
         val list = t.videos.values.toList().reversed()
-        if (list.isEmpty()) { toast("No video detected yet. Start playing the video, then try again."); return }
+        if (list.isEmpty()) { toast("Press play on the video first, then tap here."); return }
         val labels = list.map { v ->
             val name = v.url.substringBefore('?').substringAfterLast('/').take(50)
             "${v.kind}  ·  $name"
@@ -623,16 +635,31 @@ class BrowserActivity : SecureActivity() {
         if (tab == current) updateVideoFab()
     }
 
+    /** A media URL appeared in network traffic. Shown only if it follows a tap (play press). */
+    private fun onCandidate(tab: Tab, v: VideoInfo) {
+        val now = System.currentTimeMillis()
+        if (!tab.candidates.containsKey(v.url)) tab.candidates[v.url] = v to now
+        if (now - tab.lastTap < TAP_WINDOW_MS) addVideo(tab, v)
+    }
+
+    /** The user pressed play on a <video>. Show it, plus stream files fetched just before. */
+    private fun onUserPlay(tab: Tab, src: String?, page: String?, title: String?) {
+        val now = System.currentTimeMillis()
+        tab.lastTap = now
+        if (src != null && src.startsWith("http")) {
+            val v = VideoInfo.detect(src, page, title) ?: VideoInfo(src, "MP4", page, title)
+            addVideo(tab, v)
+        }
+        // Streaming players (blob: sources) load the .m3u8/.mp4 right before "play" fires.
+        tab.candidates.values.filter { now - it.second < PRE_PLAY_WINDOW_MS }.forEach { addVideo(tab, it.first) }
+    }
+
     // ------------------------------------------------------------------ WebView clients
 
     private inner class VideoBridge(private val tab: Tab) {
         @JavascriptInterface
-        fun found(url: String?, page: String?, title: String?) {
-            if (url.isNullOrBlank()) return
-            val v = VideoInfo.detect(url, page, title)
-                ?: if (url.startsWith("http")) VideoInfo(url, "MP4", page, title) else null
-            v ?: return
-            runOnUiThread { addVideo(tab, v) }
+        fun played(url: String?, page: String?, title: String?) {
+            runOnUiThread { onUserPlay(tab, url, page, title) }
         }
     }
 
@@ -650,7 +677,7 @@ class BrowserActivity : SecureActivity() {
                 }
             }
             val v = VideoInfo.detect(url, pageUrls[tab], tab.title)
-            if (v != null) runOnUiThread { addVideo(tab, v) }
+            if (v != null) runOnUiThread { onCandidate(tab, v) }
             return null
         }
 
@@ -675,7 +702,7 @@ class BrowserActivity : SecureActivity() {
         }
 
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
-            if (pageUrls[tab] != url) tab.videos.clear()
+            if (pageUrls[tab] != url) { tab.videos.clear(); tab.candidates.clear(); tab.lastTap = 0 }
             pageUrls[tab] = url
             pageHosts[tab] = Uri.parse(url).host.orEmpty()
             whitelistCache = prefs.whitelist
@@ -859,24 +886,27 @@ class BrowserActivity : SecureActivity() {
         private const val DESKTOP_UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 
-        /** Finds <video>/<audio>/<source> URLs (re-checks for players that load late). */
+        private const val TAP_WINDOW_MS = 15_000L
+        private const val PRE_PLAY_WINDOW_MS = 10_000L
+
+        /** Reports a <video>/<audio> only when it starts playing after a real tap/click (not autoplay). */
         private val VIDEO_SCAN_JS = """
             (function(){
-              function scan(){
-                try{
-                  var els=document.querySelectorAll('video,audio,video source,audio source');
-                  for(var i=0;i<els.length;i++){
-                    var s=els[i].currentSrc||els[i].src;
-                    if(s&&s.indexOf('http')==0){__vd.found(s,location.href,document.title);}
-                  }
-                }catch(e){}
-              }
-              scan();
-              if(!window.__vdHooked){
-                window.__vdHooked=true;
-                document.addEventListener('play',function(){setTimeout(scan,500);},true);
-                setTimeout(scan,3000);
-              }
+              if(window.__vdHooked) return;
+              window.__vdHooked=true;
+              var lastGesture=0;
+              function g(e){ if(e.isTrusted) lastGesture=Date.now(); }
+              ['pointerdown','touchend','click','keydown'].forEach(function(t){document.addEventListener(t,g,true);});
+              document.addEventListener('play',function(e){
+                var el=e.target;
+                if(!el||!el.tagName) return;
+                var t=el.tagName.toLowerCase();
+                if(t!=='video'&&t!=='audio') return;
+                var user=(Date.now()-lastGesture<5000)||(navigator.userActivation&&navigator.userActivation.isActive);
+                if(!user) return;
+                var s=el.currentSrc||el.src||'';
+                try{__vd.played(s,location.href,document.title);}catch(x){}
+              },true);
             })();
         """.trimIndent()
     }

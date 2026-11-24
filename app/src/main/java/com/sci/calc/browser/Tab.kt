@@ -42,7 +42,12 @@ class Tab(val webView: WebView, val incognito: Boolean) {
     var title: String = ""
     var favicon: Bitmap? = null
     var desktop = false
+    /** Videos the user actually started playing — the only ones shown. */
     val videos = LinkedHashMap<String, VideoInfo>()
+    /** Every media URL seen in network traffic, with the time it was seen (not shown). */
+    val candidates = LinkedHashMap<String, Pair<VideoInfo, Long>>()
+    /** Time of the user's last tap on the page (a press on a play button counts). */
+    var lastTap = 0L
 
     val url: String get() = webView.url ?: ""
 }
