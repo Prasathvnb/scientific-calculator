@@ -671,8 +671,10 @@ class BrowserActivity : SecureActivity() {
             usable.isEmpty() -> toast("Couldn't find this video's file. Let it play for a few seconds, then try again.")
             usable.size == 1 -> startVideoDownload(tab, usable[0])
             else -> {
-                // Prefer a master playlist; otherwise let the user pick.
-                val master = usable.firstOrNull { it.kind == "HLS" && it.url.contains("master", true) }
+                // Prefer the master playlist: named "master", else the first .m3u8 the player requested
+                // (players load the master first, then the quality playlists).
+                val hls = usable.filter { it.kind == "HLS" }
+                val master = hls.firstOrNull { it.url.contains("master", true) } ?: hls.lastOrNull()
                 if (master != null) startVideoDownload(tab, master)
                 else AlertDialog.Builder(this)
                     .setTitle("Choose stream")
