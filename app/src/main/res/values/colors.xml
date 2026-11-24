@@ -1,0 +1,12 @@
+<resources>
+    <color name="calc_bg">#FF121417</color>
+    <color name="calc_display">#FF1B1E23</color>
+    <color name="calc_key">#FF262A31</color>
+    <color name="calc_key_fn">#FF1F3340</color>
+    <color name="calc_key_op">#FFFF9F0A</color>
+    <color name="calc_key_eq">#FF2E7D5B</color>
+    <color name="calc_text">#FFF2F4F7</color>
+    <color name="calc_text_dim">#FF8A93A0</color>
+    <color name="accent">#FF2F7BEB</color>
+    <color name="icon_bg">#FF22313F</color>
+</resources>

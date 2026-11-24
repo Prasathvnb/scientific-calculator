@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:id="@+id/m_new_tab" android:title="New tab" />
+    <item android:id="@+id/m_new_private" android:title="New private tab" />
+    <item android:id="@+id/m_bookmark" android:title="Add bookmark" />
+    <item android:id="@+id/m_bookmarks" android:title="Bookmarks" />
+    <item android:id="@+id/m_history" android:title="History" />
+    <item android:id="@+id/m_downloads" android:title="Downloads" />
+    <item android:id="@+id/m_vault" android:title="Locked folder" />
+    <item android:id="@+id/m_videos" android:title="Videos on this page" />
+    <item android:id="@+id/m_find" android:title="Find in page" />
+    <item android:id="@+id/m_desktop" android:checkable="true" android:title="Desktop site" />
+    <item android:id="@+id/m_adsite" android:checkable="true" android:title="Block ads on this site" />
+    <item android:id="@+id/m_share" android:title="Share" />
+    <item android:id="@+id/m_copy" android:title="Copy link" />
+    <item android:id="@+id/m_shortcut" android:title="Add to home screen" />
+    <item android:id="@+id/m_pdf" android:title="Save as PDF" />
+    <item android:id="@+id/m_settings" android:title="Settings" />
+    <item android:id="@+id/m_lock" android:title="Lock and exit" />
+</menu>

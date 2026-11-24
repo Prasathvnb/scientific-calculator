@@ -1,0 +1,59 @@
+<resources>
+    <style name="Theme.Calc" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/accent</item>
+        <item name="colorSecondary">@color/accent</item>
+    </style>
+
+    <style name="Theme.Calc.WithBar" parent="Theme.Material3.DayNight">
+        <item name="colorPrimary">@color/accent</item>
+    </style>
+
+    <style name="Theme.Calc.Calculator" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="android:windowBackground">@color/calc_bg</item>
+        <item name="android:statusBarColor">@color/calc_bg</item>
+        <item name="android:navigationBarColor">@color/calc_bg</item>
+        <item name="colorPrimary">@color/calc_key_op</item>
+    </style>
+
+    <style name="Theme.Calc.Player" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+
+    <style name="CalcKey">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">match_parent</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:layout_margin">3dp</item>
+        <item name="android:gravity">center</item>
+        <item name="android:textColor">@color/calc_text</item>
+        <item name="android:textSize">20sp</item>
+        <item name="android:background">@drawable/key_bg</item>
+        <item name="android:backgroundTint">@color/calc_key</item>
+        <item name="android:clickable">true</item>
+        <item name="android:focusable">true</item>
+        <item name="android:foreground">?android:attr/selectableItemBackground</item>
+    </style>
+
+    <style name="CalcKey.Fn">
+        <item name="android:textSize">15sp</item>
+        <item name="android:backgroundTint">@color/calc_key_fn</item>
+    </style>
+
+    <style name="CalcKey.Op">
+        <item name="android:textSize">22sp</item>
+        <item name="android:textColor">#FF1A1A1A</item>
+        <item name="android:backgroundTint">@color/calc_key_op</item>
+    </style>
+
+    <style name="CalcKey.Eq">
+        <item name="android:textSize">24sp</item>
+        <item name="android:backgroundTint">@color/calc_key_eq</item>
+    </style>
+    <style name="BarButton">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">match_parent</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:background">?attr/selectableItemBackgroundBorderless</item>
+        <item name="android:scaleType">center</item>
+    </style>
+</resources>

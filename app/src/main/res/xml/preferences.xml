@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <PreferenceCategory app:title="Security" app:iconSpaceReserved="false">
+        <Preference app:key="change_code" app:title="Change secret code" app:iconSpaceReserved="false"
+            app:summary="The code you type on the calculator, then =" />
+        <SwitchPreferenceCompat app:key="bio_switch" app:title="Ask for fingerprint too" app:iconSpaceReserved="false"
+            app:summary="After the secret code" />
+        <Preference app:key="new_backup" app:title="Get a new backup code" app:iconSpaceReserved="false"
+            app:summary="16 digits that let you reset a forgotten code" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="Browser" app:iconSpaceReserved="false">
+        <ListPreference app:key="search_engine" app:title="Search engine" app:iconSpaceReserved="false"
+            app:defaultValue="google" app:entries="@array/engines" app:entryValues="@array/engine_values"
+            app:useSimpleSummaryProvider="true" />
+        <EditTextPreference app:key="home_page" app:title="Home page" app:iconSpaceReserved="false"
+            app:dialogMessage="Leave empty to use the search engine's page" app:useSimpleSummaryProvider="true" />
+        <ListPreference app:key="text_zoom" app:title="Text size" app:iconSpaceReserved="false"
+            app:defaultValue="100" app:entries="@array/zoom" app:entryValues="@array/zoom_values"
+            app:useSimpleSummaryProvider="true" />
+        <SwitchPreferenceCompat app:key="force_dark" app:title="Dark mode for websites" app:iconSpaceReserved="false" app:defaultValue="false" />
+        <SwitchPreferenceCompat app:key="desktop_default" app:title="Always request desktop sites" app:iconSpaceReserved="false" app:defaultValue="false" />
+        <SwitchPreferenceCompat app:key="javascript" app:title="JavaScript" app:iconSpaceReserved="false" app:defaultValue="true" />
+        <SwitchPreferenceCompat app:key="block_popups" app:title="Block pop-ups" app:iconSpaceReserved="false" app:defaultValue="true" />
+        <SwitchPreferenceCompat app:key="save_history" app:title="Save browsing history" app:iconSpaceReserved="false" app:defaultValue="true" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="Ad blocker &amp; privacy" app:iconSpaceReserved="false">
+        <SwitchPreferenceCompat app:key="adblock" app:title="Block ads and trackers" app:iconSpaceReserved="false" app:defaultValue="true" />
+        <Preference app:key="update_blocklist" app:title="Update block list now" app:iconSpaceReserved="false" />
+        <Preference app:key="clear_whitelist" app:title="Sites allowed to show ads" app:iconSpaceReserved="false" />
+        <SwitchPreferenceCompat app:key="block_3p_cookies" app:title="Block third-party cookies" app:iconSpaceReserved="false" app:defaultValue="true" />
+        <SwitchPreferenceCompat app:key="dnt" app:title="Send Do Not Track" app:iconSpaceReserved="false" app:defaultValue="true" />
+        <Preference app:key="clear_data" app:title="Clear browsing data" app:iconSpaceReserved="false"
+            app:summary="Cookies, cache, history, site permissions" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="Downloads" app:iconSpaceReserved="false">
+        <SwitchPreferenceCompat app:key="encrypt_downloads" app:title="Lock (encrypt) downloads" app:iconSpaceReserved="false"
+            app:defaultValue="true" app:summary="Files can only be opened inside this app" />
+        <Preference app:key="download_folder" app:title="Download folder" app:iconSpaceReserved="false" />
+        <Preference app:key="download_folder_reset" app:title="Use private app folder on memory card" app:iconSpaceReserved="false"
+            app:summary="Recommended. Hidden from gallery and file managers. Note: removed if the app is uninstalled." />
+    </PreferenceCategory>
+</PreferenceScreen>
