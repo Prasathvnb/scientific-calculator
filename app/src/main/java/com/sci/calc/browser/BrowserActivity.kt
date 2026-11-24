@@ -365,6 +365,7 @@ class BrowserActivity : SecureActivity() {
     }
 
     private fun selectTab(t: Tab) {
+        current?.let { if (it != t) captureThumb(it) }
         current?.webView?.onPause()
         webContainer.removeAllViews()
         (t.webView.parent as? ViewGroup)?.removeView(t.webView)
@@ -387,35 +388,31 @@ class BrowserActivity : SecureActivity() {
     }
 
     private fun showTabSwitcher() {
-        lateinit var dialog: AlertDialog
-        val list = android.widget.ListView(this)
-        val adapter = object : ArrayAdapter<Tab>(this, 0, tabs) {
-            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-                val row = convertView ?: layoutInflater.inflate(R.layout.row_tab, parent, false)
-                val t = getItem(position)!!
-                row.findViewById<TextView>(R.id.title).text =
-                    (if (t.incognito) "🕶 " else "") + t.title.ifBlank { t.url.ifBlank { "New tab" } }
-                row.findViewById<TextView>(R.id.subtitle).text = t.url
-                row.alpha = if (t == current) 1f else 0.75f
-                row.findViewById<ImageButton>(R.id.close).setOnClickListener {
-                    closeTab(t); notifyDataSetChanged()
-                    if (tabs.size <= 1 && tabs.firstOrNull() != null) {/* keep open */ }
-                }
-                row.setOnClickListener { selectTab(t); dialog.dismiss() }
-                return row
-            }
+        current?.let { captureThumb(it) }
+        TabGridDialog(
+            this, tabs, current,
+            onSelect = { selectTab(it) },
+            onClose = { closeTab(it) },
+            onNew = { incognito -> newTab(prefs.homeUrl(), incognito) },
+            onCloseAll = { tabs.toList().forEach { closeTab(it) } },
+        ).show()
+    }
+
+    /** Takes a small screenshot of the visible part of a tab's page. */
+    private fun captureThumb(t: Tab) {
+        val wv = t.webView
+        if (wv.parent == null || wv.width <= 0 || wv.height <= 0) return
+        runCatching {
+            val scale = 0.4f
+            val bmp = Bitmap.createBitmap((wv.width * scale).toInt(), (wv.height * scale).toInt(), Bitmap.Config.RGB_565)
+            val c = android.graphics.Canvas(bmp)
+            c.drawColor(android.graphics.Color.WHITE)
+            c.scale(scale, scale)
+            c.translate(-wv.scrollX.toFloat(), -wv.scrollY.toFloat())
+            wv.draw(c)
+            t.thumbnail?.takeIf { it != bmp }?.recycle()
+            t.thumbnail = bmp
         }
-        list.adapter = adapter
-        dialog = AlertDialog.Builder(this)
-            .setTitle("Tabs (${tabs.size})")
-            .setView(list)
-            .setPositiveButton("New tab") { _, _ -> newTab(prefs.homeUrl(), false) }
-            .setNeutralButton("Private tab") { _, _ -> newTab(prefs.homeUrl(), true) }
-            .setNegativeButton("Close all") { _, _ ->
-                tabs.toList().forEach { closeTab(it) }
-            }
-            .create()
-        dialog.show()
     }
 
     // ------------------------------------------------------------------ menu
@@ -819,7 +816,10 @@ class BrowserActivity : SecureActivity() {
         }
 
         override fun onPageFinished(view: WebView, url: String) {
-            if (tab == current) { progress.visibility = View.GONE; swipe.isRefreshing = false; showUrl() }
+            if (tab == current) {
+                progress.visibility = View.GONE; swipe.isRefreshing = false; showUrl()
+                view.postDelayed({ if (tab == current) captureThumb(tab) }, 800)
+            }
             // Fallback for old WebViews without document-start scripts (no-op if already injected).
             view.evaluateJavascript(PAGE_JS, null)
             if (!tab.incognito && prefs.saveHistory && url.startsWith("http")) {

@@ -41,6 +41,8 @@ data class VideoInfo(val url: String, val kind: String, val pageUrl: String?, va
 class Tab(val webView: WebView, val incognito: Boolean) {
     var title: String = ""
     var favicon: Bitmap? = null
+    /** Small screenshot for the tab overview. */
+    var thumbnail: Bitmap? = null
     var desktop = false
     /** Videos the user actually started playing — the only ones shown. */
     val videos = LinkedHashMap<String, VideoInfo>()
