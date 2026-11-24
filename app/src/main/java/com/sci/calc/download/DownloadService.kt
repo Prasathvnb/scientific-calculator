@@ -29,6 +29,7 @@ import java.util.concurrent.Executors
 class DownloadService : Service() {
 
     private val pool = Executors.newFixedThreadPool(2)
+    private val scheduled = java.util.Collections.synchronizedSet(HashSet<Long>())
     private val nm by lazy { getSystemService(NotificationManager::class.java) }
     private val listener: () -> Unit = { updateNotification() }
 
@@ -51,10 +52,14 @@ class DownloadService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val id = intent?.getLongExtra(EXTRA_ID, -1) ?: -1
         val task = DownloadRegistry.find(id)
-        if (task != null && task.status != Status.RUNNING && task.status != Status.QUEUED) {
+        // Start it unless this exact download is already scheduled or running.
+        if (task != null && scheduled.add(task.id)) {
             task.status = Status.QUEUED; task.cancelRequested = false; task.pauseRequested = false; task.error = null
             DownloadRegistry.changed(true)
-            pool.execute { run(task) }
+            pool.execute {
+                try { run(task) } finally { scheduled.remove(task.id) }
+                if (DownloadRegistry.activeCount() == 0) stopSelfSafely()
+            }
         } else if (DownloadRegistry.activeCount() == 0) stopSelfSafely()
         return START_NOT_STICKY
     }
@@ -96,7 +101,6 @@ class DownloadService : Service() {
         }
         if (task.status == Status.DONE) task.error = null
         DownloadRegistry.changed(true)
-        if (DownloadRegistry.activeCount() == 0) stopSelfSafely()
     }
 
     private fun resetProgress(t: DownloadTask) {
