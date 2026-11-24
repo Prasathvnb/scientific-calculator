@@ -58,6 +58,9 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewCompat
+import com.google.android.material.snackbar.Snackbar
+import org.json.JSONObject
 import androidx.webkit.WebViewFeature
 import com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
 import com.journeyapps.barcodescanner.ScanContract
@@ -308,6 +311,9 @@ class BrowserActivity : SecureActivity() {
         wv.webViewClient = Client(tab)
         wv.webChromeClient = Chrome(tab)
         wv.addJavascriptInterface(VideoBridge(tab), "__vd")
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            WebViewCompat.addDocumentStartJavaScript(wv, PAGE_JS, setOf("*"))
+        }
         wv.setFindListener { active, count, _ ->
             if (tab == current) findCount.text = if (count == 0) "0/0" else "${active + 1}/$count"
         }
@@ -540,21 +546,19 @@ class BrowserActivity : SecureActivity() {
     // ------------------------------------------------------------------ videos & downloads
 
     private fun updateVideoFab() {
-        val n = current?.videos?.size ?: 0
-        fabVideo.visibility = if (n > 0) View.VISIBLE else View.GONE
-        fabVideo.text = if (n == 1) "1 video" else "$n videos"
+        fabVideo.visibility = View.GONE
     }
 
     private fun showVideos() {
         val t = current ?: return
         val list = t.videos.values.toList().reversed()
-        if (list.isEmpty()) { toast("Press play on the video first, then tap here."); return }
+        if (list.isEmpty()) { toast("Play the video, then tap the ⬇ Download button on it."); return }
         val labels = list.map { v ->
             val name = v.url.substringBefore('?').substringAfterLast('/').take(50)
             "${v.kind}  ·  $name"
         }.toTypedArray()
         AlertDialog.Builder(this)
-            .setTitle("Detected videos")
+            .setTitle("Videos you downloaded or played")
             .setItems(labels) { _, i -> videoActions(list[i]) }
             .setNegativeButton("Close", null)
             .show()
@@ -635,11 +639,57 @@ class BrowserActivity : SecureActivity() {
         if (tab == current) updateVideoFab()
     }
 
+    /** User tapped ⬇ on a specific video: work out which file/stream that video is playing. */
+    private fun onVideoButton(tab: Tab, o: JSONObject) {
+        val page = o.optString("page").ifBlank { tab.url }
+        val title = o.optString("title").ifBlank { tab.title }
+        val found = LinkedHashMap<String, VideoInfo>()
+        val src = o.optString("src")
+        if (src.startsWith("http")) {
+            found[src] = VideoInfo.detect(src, page, title) ?: VideoInfo(src, "MP4", page, title)
+        }
+        // Stream files the player itself requested (blob: players), most recent first.
+        val urls = o.optJSONArray("urls")
+        if (found.isEmpty() && urls != null) {
+            for (i in urls.length() - 1 downTo 0) {
+                val u = urls.optString(i)
+                VideoInfo.detect(u, page, title)?.let { found.putIfAbsent(u, it) }
+            }
+        }
+        // Last resort: media seen on the network shortly before/after this video started.
+        if (found.isEmpty()) {
+            val now = System.currentTimeMillis()
+            tab.candidates.values.filter { now - it.second < 120_000 }.reversed()
+                .forEach { found.putIfAbsent(it.first.url, it.first) }
+        }
+        val usable = found.values.filter { it.downloadable }
+        when {
+            usable.isEmpty() && found.isNotEmpty() -> toast("This video uses a format that can't be downloaded (DASH/DRM).")
+            usable.isEmpty() -> toast("Couldn't find this video's file. Let it play for a few seconds, then try again.")
+            usable.size == 1 -> startVideoDownload(tab, usable[0])
+            else -> {
+                // Prefer a master playlist; otherwise let the user pick.
+                val master = usable.firstOrNull { it.kind == "HLS" && it.url.contains("master", true) }
+                if (master != null) startVideoDownload(tab, master)
+                else AlertDialog.Builder(this)
+                    .setTitle("Choose stream")
+                    .setItems(usable.map { "${it.kind} · " + it.url.substringBefore('?').substringAfterLast('/').take(40) }.toTypedArray()) { _, i ->
+                        startVideoDownload(tab, usable[i])
+                    }.setNegativeButton("Cancel", null).show()
+            }
+        }
+    }
+
+    private fun startVideoDownload(tab: Tab, v: VideoInfo) {
+        addVideo(tab, v)
+        confirmDownload(v.url, v.suggestedName(), mimeFor(v.kind), v.kind == "HLS", null, v.pageUrl ?: tab.url)
+    }
+
     /** A media URL appeared in network traffic. Shown only if it follows a tap (play press). */
     private fun onCandidate(tab: Tab, v: VideoInfo) {
         val now = System.currentTimeMillis()
         if (!tab.candidates.containsKey(v.url)) tab.candidates[v.url] = v to now
-        if (now - tab.lastTap < TAP_WINDOW_MS) addVideo(tab, v)
+        while (tab.candidates.size > 80) tab.candidates.remove(tab.candidates.keys.first())
     }
 
     /** The user pressed play on a <video>. Show it, plus stream files fetched just before. */
@@ -650,8 +700,6 @@ class BrowserActivity : SecureActivity() {
             val v = VideoInfo.detect(src, page, title) ?: VideoInfo(src, "MP4", page, title)
             addVideo(tab, v)
         }
-        // Streaming players (blob: sources) load the .m3u8/.mp4 right before "play" fires.
-        tab.candidates.values.filter { now - it.second < PRE_PLAY_WINDOW_MS }.forEach { addVideo(tab, it.first) }
     }
 
     // ------------------------------------------------------------------ WebView clients
@@ -660,6 +708,22 @@ class BrowserActivity : SecureActivity() {
         @JavascriptInterface
         fun played(url: String?, page: String?, title: String?) {
             runOnUiThread { onUserPlay(tab, url, page, title) }
+        }
+
+        /** Called by the ⬇ Download button drawn on top of a video. */
+        @JavascriptInterface
+        fun download(json: String?) {
+            val o = runCatching { JSONObject(json ?: "") }.getOrNull() ?: return
+            runOnUiThread { onVideoButton(tab, o) }
+        }
+
+        /** Ad-hiding CSS for a frame, requested by the page script at document start. */
+        @JavascriptInterface
+        fun css(host: String?): String {
+            if (!prefs.adBlock) return ""
+            val top = pageHosts[tab]
+            if (top != null && top in whitelistCache) return ""
+            return AdBlocker.cssFor(host)
         }
     }
 
@@ -683,6 +747,10 @@ class BrowserActivity : SecureActivity() {
 
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
             val uri = request.url
+            if (prefs.adBlock && request.isForMainFrame && (pageHosts[tab] ?: "") !in whitelistCache && AdBlocker.isAd(uri.host)) {
+                toast("Blocked an ad redirect")
+                return true
+            }
             return when (uri.scheme?.lowercase(Locale.US)) {
                 "http", "https", "about", "data", "blob", "javascript", "file" -> false
                 "intent" -> {
@@ -712,7 +780,8 @@ class BrowserActivity : SecureActivity() {
 
         override fun onPageFinished(view: WebView, url: String) {
             if (tab == current) { progress.visibility = View.GONE; swipe.isRefreshing = false; showUrl() }
-            view.evaluateJavascript(VIDEO_SCAN_JS, null)
+            // Fallback for old WebViews without document-start scripts (no-op if already injected).
+            view.evaluateJavascript(PAGE_JS, null)
             if (!tab.incognito && prefs.saveHistory && url.startsWith("http")) {
                 db.addHistory(view.title ?: url, url)
             }
@@ -735,6 +804,27 @@ class BrowserActivity : SecureActivity() {
 
     private val pageUrls = java.util.concurrent.ConcurrentHashMap<Tab, String>()
     private val pageHosts = java.util.concurrent.ConcurrentHashMap<Tab, String>()
+
+    private fun siteOf(host: String?): String {
+        val parts = host.orEmpty().lowercase().split('.').filter { it.isNotEmpty() }
+        if (parts.size <= 2) return parts.joinToString(".")
+        val n = if (parts[parts.size - 1].length == 2 && parts[parts.size - 2].length <= 3) 3 else 2
+        return parts.takeLast(n).joinToString(".")
+    }
+
+    /** Opens same-site pop-ups (e.g. target=_blank links); blocks ad pop-ups; asks for others. */
+    private fun handlePopup(opener: Tab, url: String) {
+        val host = Uri.parse(url).host
+        val adsOn = prefs.adBlock && (pageHosts[opener] ?: "") !in whitelistCache
+        when {
+            adsOn && AdBlocker.isAd(host) -> toast("Pop-up ad blocked")
+            !url.startsWith("http") -> {}
+            siteOf(host) == siteOf(pageHosts[opener]) || !prefs.blockPopups -> newTab(url, opener.incognito)
+            else -> Snackbar.make(findViewById(R.id.main), "Pop-up blocked: " + (host ?: url), Snackbar.LENGTH_LONG)
+                .setAction("Open") { newTab(url, opener.incognito) }
+                .show()
+        }
+    }
 
     @Volatile private var whitelistCache: Set<String> = emptySet()
 
@@ -780,9 +870,23 @@ class BrowserActivity : SecureActivity() {
 
         override fun onCreateWindow(view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message): Boolean {
             if (prefs.blockPopups && !isUserGesture) return false
-            val t = newTab(null, tab.incognito)
+            // Load the pop-up in a hidden WebView just long enough to see where it goes.
+            val probe = WebView(this@BrowserActivity)
+            probe.settings.javaScriptEnabled = false
+            var decided = false
+            fun decide(url: String) {
+                if (decided || url.isBlank() || url == "about:blank") return
+                decided = true
+                probe.stopLoading()
+                probe.post { probe.destroy() }
+                handlePopup(tab, url)
+            }
+            probe.webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(v: WebView, r: WebResourceRequest): Boolean { decide(r.url.toString()); return true }
+                override fun onPageStarted(v: WebView, url: String, favicon: Bitmap?) { decide(url) }
+            }
             val transport = resultMsg.obj as WebView.WebViewTransport
-            transport.webView = t.webView
+            transport.webView = probe
             resultMsg.sendToTarget()
             return true
         }
@@ -886,27 +990,81 @@ class BrowserActivity : SecureActivity() {
         private const val DESKTOP_UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 
-        private const val TAP_WINDOW_MS = 15_000L
-        private const val PRE_PLAY_WINDOW_MS = 10_000L
-
-        /** Reports a <video>/<audio> only when it starts playing after a real tap/click (not autoplay). */
-        private val VIDEO_SCAN_JS = """
+        /**
+         * Injected into every page and frame at document start:
+         *  - ad-hiding CSS
+         *  - remembers stream/file URLs the page's player requests (fetch / XHR)
+         *  - draws a "⬇ Download" button on a video once the user presses play on it
+         */
+        private val PAGE_JS = """
             (function(){
-              if(window.__vdHooked) return;
-              window.__vdHooked=true;
-              var lastGesture=0;
-              function g(e){ if(e.isTrusted) lastGesture=Date.now(); }
-              ['pointerdown','touchend','click','keydown'].forEach(function(t){document.addEventListener(t,g,true);});
+              if(window.__vdInit) return; window.__vdInit=true;
+              try{
+                var css=__vd.css(location.hostname);
+                if(css){var st=document.createElement('style');st.textContent=css;(document.head||document.documentElement).appendChild(st);}
+              }catch(e){}
+              var media=[];
+              var re=/\.(m3u8|mpd|mp4|m4v|webm|mov|mkv)(\?|#|$)/i, seg=/(range=|bytestart=|\/seg-|&sq=|\.m4s)/i;
+              function note(u){
+                if(!u) return;
+                try{u=new URL(u,location.href).href;}catch(e){return;}
+                if(re.test(u)&&!seg.test(u)){media.push({u:u,t:Date.now()}); if(media.length>80) media.shift();}
+              }
+              try{var of=window.fetch; if(of){window.fetch=function(i){try{note(typeof i==='string'?i:(i&&i.url));}catch(e){} return of.apply(this,arguments);};}}catch(e){}
+              try{var oo=XMLHttpRequest.prototype.open; XMLHttpRequest.prototype.open=function(m,u){try{note(u);}catch(e){} return oo.apply(this,arguments);};}catch(e){}
+              var lastG=0;
+              ['pointerdown','touchend','click','keydown'].forEach(function(t){document.addEventListener(t,function(e){if(e.isTrusted) lastG=Date.now();},true);});
+              var vids=[];
+              function urlsFor(v){
+                var since=(v.__vdPlayAt||Date.now())-30000, out=[];
+                media.forEach(function(m){if(m.t>=since&&out.indexOf(m.u)<0) out.push(m.u);});
+                return out;
+              }
+              function makeBtn(v){
+                if(v.__vdBtn) return;
+                var b=document.createElement('div');
+                b.textContent='⬇ Download';
+                b.style.cssText='position:fixed;z-index:2147483647;display:none;background:rgba(20,20,20,.78);color:#fff;'+
+                  'font:600 13px/1 sans-serif;padding:9px 12px;border-radius:18px;border:1px solid rgba(255,255,255,.4);'+
+                  'box-shadow:0 2px 6px rgba(0,0,0,.4);-webkit-user-select:none;user-select:none;pointer-events:auto;';
+                var stop=function(e){e.stopPropagation(); if(e.stopImmediatePropagation) e.stopImmediatePropagation();};
+                ['pointerdown','pointerup','mousedown','mouseup','touchstart','touchend'].forEach(function(t){b.addEventListener(t,stop,true);});
+                b.addEventListener('click',function(e){
+                  e.preventDefault(); stop(e);
+                  var s=v.currentSrc||v.src||'';
+                  __vd.download(JSON.stringify({src:s,urls:urlsFor(v),title:document.title,page:location.href}));
+                },true);
+                v.__vdBtn=b; vids.push(v);
+              }
+              function place(){
+                var fs=document.fullscreenElement||document.webkitFullscreenElement;
+                vids.forEach(function(v){
+                  var b=v.__vdBtn; if(!b) return;
+                  if(!v.isConnected){ if(b.parentNode) b.parentNode.removeChild(b); return; }
+                  var parent=(fs&&fs.tagName!=='VIDEO')?fs:(document.body||document.documentElement);
+                  if(b.parentNode!==parent) parent.appendChild(b);
+                  var r=v.getBoundingClientRect();
+                  var vis=r.width>=120&&r.height>=60&&r.bottom>30&&r.top<innerHeight-30&&getComputedStyle(v).visibility!=='hidden';
+                  b.style.display=vis?'block':'none';
+                  if(vis){
+                    b.style.top=Math.max(6,r.top+10)+'px';
+                    b.style.left=Math.max(6,Math.min(innerWidth-b.offsetWidth-6,r.right-b.offsetWidth-10))+'px';
+                  }
+                });
+              }
               document.addEventListener('play',function(e){
-                var el=e.target;
-                if(!el||!el.tagName) return;
-                var t=el.tagName.toLowerCase();
-                if(t!=='video'&&t!=='audio') return;
-                var user=(Date.now()-lastGesture<5000)||(navigator.userActivation&&navigator.userActivation.isActive);
-                if(!user) return;
-                var s=el.currentSrc||el.src||'';
-                try{__vd.played(s,location.href,document.title);}catch(x){}
+                var v=e.target;
+                if(!v||!v.tagName||v.tagName.toLowerCase()!=='video') return;
+                var user=(Date.now()-lastG<6000)||(navigator.userActivation&&navigator.userActivation.isActive);
+                if(!user&&!v.__vdBtn) return;
+                if(!v.__vdPlayAt) v.__vdPlayAt=Date.now();
+                makeBtn(v); place();
+                try{__vd.played(v.currentSrc||v.src||'',location.href,document.title);}catch(x){}
               },true);
+              window.addEventListener('scroll',place,true);
+              window.addEventListener('resize',place);
+              document.addEventListener('fullscreenchange',place);
+              setInterval(place,600);
             })();
         """.trimIndent()
     }

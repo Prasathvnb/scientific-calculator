@@ -28,7 +28,7 @@
 
     <PreferenceCategory app:title="Ad blocker &amp; privacy" app:iconSpaceReserved="false">
         <SwitchPreferenceCompat app:key="adblock" app:title="Block ads and trackers" app:iconSpaceReserved="false" app:defaultValue="true" />
-        <Preference app:key="update_blocklist" app:title="Update block list now" app:iconSpaceReserved="false" />
+        <Preference app:key="update_blocklist" app:title="Update block lists now" app:iconSpaceReserved="false" />
         <Preference app:key="clear_whitelist" app:title="Sites allowed to show ads" app:iconSpaceReserved="false" />
         <SwitchPreferenceCompat app:key="block_3p_cookies" app:title="Block third-party cookies" app:iconSpaceReserved="false" app:defaultValue="true" />
         <SwitchPreferenceCompat app:key="dnt" app:title="Send Do Not Track" app:iconSpaceReserved="false" app:defaultValue="true" />
