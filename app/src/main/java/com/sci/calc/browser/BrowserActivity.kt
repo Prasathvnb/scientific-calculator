@@ -61,6 +61,9 @@ import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import com.google.android.material.snackbar.Snackbar
 import org.json.JSONObject
+import android.text.format.Formatter
+import com.sci.calc.download.HlsQuality
+import kotlin.concurrent.thread
 import androidx.webkit.WebViewFeature
 import com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
 import com.journeyapps.barcodescanner.ScanContract
@@ -682,7 +685,39 @@ class BrowserActivity : SecureActivity() {
 
     private fun startVideoDownload(tab: Tab, v: VideoInfo) {
         addVideo(tab, v)
-        confirmDownload(v.url, v.suggestedName(), mimeFor(v.kind), v.kind == "HLS", null, v.pageUrl ?: tab.url)
+        val referer = v.pageUrl ?: tab.url
+        if (v.kind != "HLS") {
+            confirmDownload(v.url, v.suggestedName(), mimeFor(v.kind), false, null, referer)
+            return
+        }
+        // Streams usually come in several qualities: ask which one, like other browsers do.
+        val ua = tab.webView.settings.userAgentString
+        val cookies = CookieManager.getInstance().getCookie(v.url)
+        toast("Checking available qualities…")
+        thread {
+            val variants = runCatching { HlsQuality.probe(v.url, ua, referer, cookies) }.getOrNull()
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (variants.isNullOrEmpty() || variants.size == 1) {
+                    val url = variants?.firstOrNull()?.url ?: v.url
+                    confirmDownload(url, v.suggestedName(), mimeFor("HLS"), true, ua, referer)
+                    return@runOnUiThread
+                }
+                val labels = variants.map { q ->
+                    val size = if (q.estBytes > 0) "  ·  ~" + Formatter.formatShortFileSize(this, q.estBytes) else ""
+                    q.label + size
+                }.toTypedArray()
+                AlertDialog.Builder(this)
+                    .setTitle("Choose quality")
+                    .setItems(labels) { _, i ->
+                        val q = variants[i]
+                        val base = v.suggestedName().substringBeforeLast('.')
+                        confirmDownload(q.url, "${base}_${q.label.replace(" ", "")}.ts", mimeFor("HLS"), true, ua, referer)
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+        }
     }
 
     /** A media URL appeared in network traffic. Shown only if it follows a tap (play press). */
