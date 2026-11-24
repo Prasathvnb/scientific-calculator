@@ -150,6 +150,9 @@ class BrowserActivity : SecureActivity() {
         }
         if (start != null) newTab(start, false) else if (tabs.isEmpty()) newTab(prefs.homeUrl(), false)
 
+        // Downloads that were running when the app was closed continue now.
+        DownloadService.resumeInterrupted(this)
+
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 when {

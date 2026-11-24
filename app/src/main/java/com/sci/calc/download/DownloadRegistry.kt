@@ -28,6 +28,8 @@ class DownloadTask(
     @Volatile var error: String? = null
     @Volatile var cancelRequested = false
     @Volatile var pauseRequested = false
+    /** Was running when the app was closed; resumes automatically. */
+    @Volatile var interrupted = false
 
     // Resume state: the partly written file and how much of it is safely on disk.
     @Volatile var location: String? = null
@@ -57,7 +59,7 @@ class DownloadTask(
             location = o.optString("loc").ifEmpty { null }
             encrypted = o.optBoolean("enc"); committed = o.optLong("committed"); segmentsDone = o.optInt("seg")
             // Anything that was running when the app closed can be resumed.
-            if (status == Status.RUNNING || status == Status.QUEUED) { status = Status.PAUSED; error = null }
+            if (status == Status.RUNNING || status == Status.QUEUED) { status = Status.PAUSED; error = null; interrupted = true }
         }
     }
 }

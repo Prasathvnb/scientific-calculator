@@ -82,16 +82,27 @@ class DownloadService : Service() {
                 } else task.status = Status.PAUSED
                 break
             } catch (e: java.io.IOException) {
-                // Network hiccup: wait and continue from where we are (up to 5 times).
-                attempt++
-                if (attempt <= 5 && !task.cancelRequested && !task.pauseRequested) {
-                    task.error = "Reconnecting… ($attempt/5)"
+                if (e is HttpStatusException && !e.retryable) {
+                    task.status = Status.FAILED; task.error = e.message; break
+                }
+                if (task.cancelRequested || task.pauseRequested) { task.status = Status.PAUSED; break }
+                // No internet: wait for it to come back (doesn't use up a retry).
+                if (!isOnline()) {
+                    task.error = "Waiting for internet…"
                     DownloadRegistry.changed(true)
-                    try { Thread.sleep(3000L * attempt) } catch (_: InterruptedException) {}
+                    if (waitForNetwork(task)) continue
+                    if (task.cancelRequested || task.pauseRequested) { task.status = Status.PAUSED; break }
+                    task.status = Status.FAILED; task.error = "No internet. Tap to resume."; break
+                }
+                attempt++
+                if (attempt <= MAX_RETRIES) {
+                    task.error = "Connection dropped, retrying ($attempt/$MAX_RETRIES)…"
+                    DownloadRegistry.changed(true)
+                    sleepUnlessStopped(task, minOf(5000L * attempt, 30_000L))
                     continue
                 }
                 task.status = Status.FAILED
-                task.error = e.message ?: "Network error"
+                task.error = (e.message ?: "Network error") + ". Tap to resume."
                 break
             } catch (e: Exception) {
                 task.status = Status.FAILED
@@ -101,6 +112,31 @@ class DownloadService : Service() {
         }
         if (task.status == Status.DONE) task.error = null
         DownloadRegistry.changed(true)
+    }
+
+    private fun isOnline(): Boolean {
+        val cm = getSystemService(android.net.ConnectivityManager::class.java)
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
+    /** Waits up to 30 minutes for a working connection. Returns true when back online. */
+    private fun waitForNetwork(task: DownloadTask): Boolean {
+        val until = System.currentTimeMillis() + 30 * 60_000L
+        while (System.currentTimeMillis() < until) {
+            if (task.cancelRequested || task.pauseRequested) return false
+            if (isOnline()) { task.error = null; return true }
+            try { Thread.sleep(3000) } catch (_: InterruptedException) { return false }
+        }
+        return false
+    }
+
+    private fun sleepUnlessStopped(task: DownloadTask, ms: Long) {
+        val until = System.currentTimeMillis() + ms
+        while (System.currentTimeMillis() < until && !task.cancelRequested && !task.pauseRequested) {
+            try { Thread.sleep(500) } catch (_: InterruptedException) { return }
+        }
     }
 
     private fun resetProgress(t: DownloadTask) {
@@ -226,7 +262,13 @@ class DownloadService : Service() {
 
     companion object {
         private const val NOTIF_ID = 42
+        private const val MAX_RETRIES = 10
         private const val EXTRA_ID = "id"
+
+        /** Continues downloads that were interrupted because the app was closed. */
+        fun resumeInterrupted(ctx: Context) {
+            DownloadRegistry.tasks.filter { it.interrupted }.forEach { it.interrupted = false; start(ctx, it) }
+        }
 
         fun start(ctx: Context, task: DownloadTask) {
             ContextCompat.startForegroundService(ctx, Intent(ctx, DownloadService::class.java).putExtra(EXTRA_ID, task.id))

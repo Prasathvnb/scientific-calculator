@@ -4,6 +4,17 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
+class HttpStatusException(val code: Int) : IOException(
+    when (code) {
+        403 -> "Link expired or access denied (403). Open the video page again and re-download."
+        404, 410 -> "File no longer available ($code)"
+        else -> "Server error $code"
+    }
+) {
+    /** Worth retrying? Server-side hiccups yes; expired / forbidden / missing links no. */
+    val retryable get() = code == 408 || code == 429 || code >= 500
+}
+
 object Http {
     /** Opens a GET connection, following redirects across http/https (up to 8 hops). */
     fun open(url: String, task: DownloadTask, range: String? = null): HttpURLConnection {
@@ -26,7 +37,7 @@ object Http {
             } else {
                 if (code >= 400) {
                     c.disconnect()
-                    throw IOException("Server error $code")
+                    throw HttpStatusException(code)
                 }
                 return c
             }

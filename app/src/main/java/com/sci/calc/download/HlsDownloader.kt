@@ -137,7 +137,10 @@ class HlsDownloader(private val task: DownloadTask) {
     private fun <T> retry(block: () -> T): T {
         var last: Exception? = null
         repeat(4) { attempt ->
-            try { return block() } catch (e: IOException) { last = e; Thread.sleep(1500L * (attempt + 1)) }
+            try { return block() } catch (e: IOException) {
+                if (e is HttpStatusException && !e.retryable) throw e
+                last = e; Thread.sleep(1500L * (attempt + 1))
+            }
         }
         throw last ?: IOException("Failed")
     }
