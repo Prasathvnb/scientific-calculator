@@ -32,7 +32,7 @@ class DownloadsActivity : SecureActivity() {
         val d = resources.displayMetrics.density
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         empty = TextView(this).apply {
-            text = "No downloads in this session.\nFinished files are in the Locked folder."
+            text = "No downloads yet.\nFinished files are in the Locked folder."
             setPadding((24 * d).toInt(), (24 * d).toInt(), (24 * d).toInt(), (24 * d).toInt())
         }
         val list = ListView(this)
@@ -52,18 +52,17 @@ class DownloadsActivity : SecureActivity() {
                 }
                 (row.findViewWithTag<TextView>("name")).text = t.name
                 val bar = row.findViewWithTag<ProgressBar>("bar")
-                bar.visibility = if (t.status == Status.RUNNING || t.status == Status.QUEUED) View.VISIBLE else View.GONE
+                bar.visibility = if (t.status == Status.RUNNING || t.status == Status.QUEUED || t.status == Status.PAUSED || (t.status == Status.FAILED && t.resumable)) View.VISIBLE else View.GONE
                 bar.isIndeterminate = t.percent < 0
                 if (t.percent >= 0) bar.progress = t.percent
                 val size = Formatter.formatFileSize(context, t.bytes)
                 row.findViewWithTag<TextView>("info").text = when (t.status) {
                     Status.QUEUED -> "Waiting…"
-                    Status.RUNNING -> if (t.isHls) "${t.done}/${t.total.coerceAtLeast(0)} parts · $size" else
-                        "$size" + (if (t.total > 0) " of " + Formatter.formatFileSize(context, t.total) else "") +
-                            (if (t.percent >= 0) " · ${t.percent}%" else "")
+                    Status.RUNNING -> (t.error?.let { "$it · " } ?: "") + progressText(t, size)
+                    Status.PAUSED -> "Paused · " + progressText(t, size) + " · tap to resume"
                     Status.DONE -> "Done · $size · in Locked folder"
-                    Status.FAILED -> "Failed: ${t.error} · tap to retry"
-                    Status.CANCELLED -> "Cancelled · tap to retry"
+                    Status.FAILED -> "Failed: ${t.error} · " + (if (t.resumable) "tap to resume (${t.percent.coerceAtLeast(0)}% saved)" else "tap to retry")
+                    Status.CANCELLED -> "Cancelled · tap to restart"
                 }
                 return row
             }
@@ -72,21 +71,36 @@ class DownloadsActivity : SecureActivity() {
         list.setOnItemClickListener { _, _, pos, _ ->
             val t = adapter.getItem(pos)!!
             val opts = when (t.status) {
-                Status.RUNNING, Status.QUEUED -> arrayOf("Cancel", "Copy link")
-                Status.DONE -> arrayOf("Open Locked folder", "Copy link")
-                else -> arrayOf("Retry", "Copy link", "Remove from list")
+                Status.RUNNING, Status.QUEUED -> arrayOf("Pause", "Cancel", "Copy link")
+                Status.PAUSED, Status.FAILED -> arrayOf(if (t.resumable) "Resume" else "Retry", "Cancel", "Copy link")
+                Status.DONE -> arrayOf("Open Locked folder", "Copy link", "Remove from list")
+                Status.CANCELLED -> arrayOf("Restart", "Copy link", "Remove from list")
             }
             AlertDialog.Builder(this).setTitle(t.name).setItems(opts) { _, i ->
                 when (opts[i]) {
-                    "Cancel" -> { t.cancelRequested = true }
-                    "Retry" -> DownloadService.start(this, t)
+                    "Pause" -> { t.pauseRequested = true }
+                    "Cancel" -> AlertDialog.Builder(this).setMessage("Cancel and delete the partly downloaded file?")
+                        .setPositiveButton("Cancel download") { _, _ ->
+                            if (t.status == Status.RUNNING || t.status == Status.QUEUED) t.cancelRequested = true
+                            else {
+                                t.location?.let { com.sci.calc.vault.Storage.deleteLocation(this, it) }
+                                t.location = null; t.committed = 0; t.segmentsDone = 0; t.done = 0; t.bytes = 0
+                                t.status = Status.CANCELLED; DownloadRegistry.changed(true)
+                            }
+                        }.setNegativeButton("Keep", null).show()
+                    "Resume", "Retry", "Restart" -> DownloadService.start(this, t)
                     "Open Locked folder" -> startActivity(Intent(this, VaultActivity::class.java))
                     "Copy link" -> getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("link", t.url))
-                    "Remove from list" -> { DownloadRegistry.tasks.remove(t); refresh() }
+                    "Remove from list" -> DownloadRegistry.remove(t)
                 }
             }.show()
         }
     }
+
+    private fun progressText(t: DownloadTask, size: String): String =
+        if (t.isHls) "${t.done}/${t.total.coerceAtLeast(0)} parts · $size" + (if (t.percent >= 0) " · ${t.percent}%" else "")
+        else "$size" + (if (t.total > 0) " of " + Formatter.formatFileSize(this, t.total) else "") +
+            (if (t.percent >= 0) " · ${t.percent}%" else "")
 
     override fun onStart() {
         super.onStart()

@@ -30,6 +30,7 @@ class App : Application() {
         })
 
         AdBlocker.init(this)
+        com.sci.calc.download.DownloadRegistry.init(this)
     }
 
     companion object {

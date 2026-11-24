@@ -19,7 +19,6 @@ import com.sci.calc.data.Prefs
 import com.sci.calc.security.CryptoManager
 import com.sci.calc.vault.Storage
 import java.io.BufferedOutputStream
-import java.io.IOException
 import java.net.URLDecoder
 import java.util.concurrent.Executors
 
@@ -52,9 +51,8 @@ class DownloadService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val id = intent?.getLongExtra(EXTRA_ID, -1) ?: -1
         val task = DownloadRegistry.find(id)
-        if (task != null) {
-            task.status = Status.QUEUED; task.cancelRequested = false; task.error = null
-            task.done = 0; task.bytes = 0
+        if (task != null && task.status != Status.RUNNING && task.status != Status.QUEUED) {
+            task.status = Status.QUEUED; task.cancelRequested = false; task.pauseRequested = false; task.error = null
             DownloadRegistry.changed(true)
             pool.execute { run(task) }
         } else if (DownloadRegistry.activeCount() == 0) stopSelfSafely()
@@ -64,68 +62,134 @@ class DownloadService : Service() {
     private fun run(task: DownloadTask) {
         task.status = Status.RUNNING
         DownloadRegistry.changed(true)
-        val encrypt = Prefs(this).encryptDownloads
-        var location: String? = null
-        try {
-            if (task.isHls) {
-                val hls = HlsDownloader(task)
-                val playlist = hls.load()
-                val ext = if (hls.isFragmentedMp4(playlist)) "mp4" else "ts"
-                val mime = if (ext == "mp4") "video/mp4" else "video/mp2t"
-                task.name = task.name.substringBeforeLast('.') + "." + ext
-                val target = Storage.create(this, task.name, mime, encrypt)
-                location = target.location
-                val out = BufferedOutputStream(if (encrypt) CryptoManager.encrypt(this, target.out) else target.out, 256 * 1024)
-                out.use { hls.write(playlist, it) }
-                Db.get(this).addFile(task.name, mime, target.location, task.bytes, encrypt)
-            } else {
-                val conn = Http.open(task.url, task)
-                val disposition = conn.getHeaderField("Content-Disposition")
-                fileNameFrom(disposition)?.let { task.name = it }
-                val mime = (conn.contentType?.substringBefore(';')?.trim()).takeUnless { it.isNullOrEmpty() || it == "application/octet-stream" }
-                    ?: task.mime
-                if (!task.name.contains('.')) {
-                    MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)?.let { task.name += ".$it" }
+        var attempt = 0
+        while (true) {
+            try {
+                if (task.isHls) runHls(task) else runDirect(task)
+                Db.get(this).addFile(task.name, task.mime, task.location!!, task.bytes, task.encrypted)
+                task.status = Status.DONE
+                break
+            } catch (e: InterruptedException) {
+                if (task.cancelRequested) {
+                    task.location?.let { Storage.deleteLocation(this, it) }
+                    resetProgress(task)
+                    task.status = Status.CANCELLED
+                } else task.status = Status.PAUSED
+                break
+            } catch (e: java.io.IOException) {
+                // Network hiccup: wait and continue from where we are (up to 5 times).
+                attempt++
+                if (attempt <= 5 && !task.cancelRequested && !task.pauseRequested) {
+                    task.error = "Reconnecting… ($attempt/5)"
+                    DownloadRegistry.changed(true)
+                    try { Thread.sleep(3000L * attempt) } catch (_: InterruptedException) {}
+                    continue
                 }
-                task.total = conn.contentLengthLong
-                val target = Storage.create(this, task.name, mime, encrypt)
-                location = target.location
-                val out = BufferedOutputStream(if (encrypt) CryptoManager.encrypt(this, target.out) else target.out, 256 * 1024)
-                conn.inputStream.use { input ->
-                    out.use { o ->
-                        val buf = ByteArray(128 * 1024)
-                        while (true) {
-                            if (task.cancelRequested) throw InterruptedException()
-                            val r = input.read(buf)
-                            if (r < 0) break
-                            o.write(buf, 0, r)
-                            task.done += r; task.bytes = task.done
-                            DownloadRegistry.changed()
-                        }
-                    }
-                }
-                conn.disconnect()
-                if (task.total > 0 && task.done < task.total) throw IOException("Connection lost")
-                Db.get(this).addFile(task.name, mime, target.location, task.bytes, encrypt)
+                task.status = Status.FAILED
+                task.error = e.message ?: "Network error"
+                break
+            } catch (e: Exception) {
+                task.status = Status.FAILED
+                task.error = e.message ?: e.javaClass.simpleName
+                break
             }
-            task.status = Status.DONE
-        } catch (e: InterruptedException) {
-            task.status = Status.CANCELLED
-            location?.let { deletePartial(it) }
-        } catch (e: Exception) {
-            task.status = Status.FAILED
-            task.error = e.message ?: e.javaClass.simpleName
-            location?.let { deletePartial(it) }
         }
+        if (task.status == Status.DONE) task.error = null
         DownloadRegistry.changed(true)
         if (DownloadRegistry.activeCount() == 0) stopSelfSafely()
     }
 
-    private fun deletePartial(location: String) {
-        runCatching {
-            if (location.startsWith("/")) java.io.File(location).delete()
-            else androidx.documentfile.provider.DocumentFile.fromSingleUri(this, android.net.Uri.parse(location))?.delete()
+    private fun resetProgress(t: DownloadTask) {
+        t.location = null; t.committed = 0; t.segmentsDone = 0; t.done = 0; t.bytes = 0
+    }
+
+    /** Opens the output: continues the partial file when possible, otherwise starts a new one. */
+    private fun openOutput(task: DownloadTask, resume: Boolean): java.io.OutputStream {
+        val loc = task.location
+        if (resume && loc != null && task.committed > 0) {
+            val header = if (task.encrypted) CryptoManager.HEADER_SIZE.toLong() else 0L
+            val len = Storage.length(this, loc)
+            if (len >= header + task.committed) {
+                val raw = Storage.openAppend(this, loc, header + task.committed)
+                if (!task.encrypted) return raw
+                val iv = Storage.openPfd(this, loc)!!.let { pfd ->
+                    android.os.ParcelFileDescriptor.AutoCloseInputStream(pfd).use { CryptoManager.readIv(it) }
+                }
+                return CryptoManager.encryptAppend(this, iv, task.committed, raw)
+            }
         }
+        // Fresh start.
+        loc?.let { Storage.deleteLocation(this, it) }
+        resetProgress(task)
+        val encrypt = Prefs(this).encryptDownloads
+        val target = Storage.create(this, task.name, task.mime, encrypt)
+        task.location = target.location
+        task.encrypted = encrypt
+        DownloadRegistry.changed(true)
+        return if (encrypt) CryptoManager.encrypt(this, target.out) else target.out
+    }
+
+    private fun runHls(task: DownloadTask) {
+        val hls = HlsDownloader(task)
+        val playlist = hls.load()
+        if (task.location == null) {
+            val ext = if (hls.isFragmentedMp4(playlist)) "mp4" else "ts"
+            task.mime = if (ext == "mp4") "video/mp4" else "video/mp2t"
+            task.name = task.name.substringBeforeLast('.') + "." + ext
+        }
+        val out = openOutput(task, resume = task.segmentsDone > 0 || task.committed > 0)
+        BufferedOutputStream(out, 256 * 1024).use { hls.write(playlist, it) }
+    }
+
+    private fun runDirect(task: DownloadTask) {
+        val resume = task.resumable
+        val conn = Http.open(task.url, task, if (resume) "bytes=${task.committed}-" else null)
+        val partial = conn.responseCode == 206
+        if (task.location == null) {
+            fileNameFrom(conn.getHeaderField("Content-Disposition"))?.let { task.name = it }
+            val type = conn.contentType?.substringBefore(';')?.trim()
+            if (!type.isNullOrEmpty() && type != "application/octet-stream" && !type.startsWith("text/")) task.mime = type
+            if (!task.name.contains('.')) {
+                MimeTypeMap.getSingleton().getExtensionFromMimeType(task.mime)?.let { task.name += ".$it" }
+            }
+        }
+        // If the server ignored the range request, the file starts again.
+        val continuing = resume && partial
+        val out = openOutput(task, resume = continuing)
+        val length = conn.contentLengthLong
+        task.total = when {
+            continuing -> conn.getHeaderField("Content-Range")?.substringAfterLast('/')?.toLongOrNull()
+                ?: if (length > 0) task.committed + length else -1
+            else -> length
+        }
+        task.done = task.committed
+        task.bytes = task.committed
+        try {
+            conn.inputStream.use { input ->
+                out.use { o ->
+                    val buf = ByteArray(128 * 1024)
+                    var sinceFlush = 0L
+                    try {
+                        while (true) {
+                            if (task.cancelRequested || task.pauseRequested) throw InterruptedException()
+                            val r = input.read(buf)
+                            if (r < 0) break
+                            o.write(buf, 0, r)
+                            task.done += r; task.bytes = task.done
+                            sinceFlush += r
+                            if (sinceFlush >= 1024 * 1024) { o.flush(); task.committed = task.done; sinceFlush = 0 }
+                            DownloadRegistry.changed()
+                        }
+                    } finally {
+                        // Whatever reached the file is kept for resuming.
+                        runCatching { o.flush(); task.committed = task.done }
+                    }
+                }
+            }
+        } finally {
+            conn.disconnect()
+        }
+        if (task.total > 0 && task.done < task.total) throw java.io.IOException("Connection lost")
     }
 
     private fun stopSelfSafely() {

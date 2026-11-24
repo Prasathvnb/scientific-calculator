@@ -104,25 +104,40 @@ class HlsDownloader(private val task: DownloadTask) {
         return ByteArray(16) { i -> h.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
     }
 
+    /**
+     * Writes segments from [DownloadTask.segmentsDone] onwards, so a retry continues
+     * where it stopped. After every segment the data is flushed and recorded as committed.
+     */
     fun write(p: MediaPlaylist, out: OutputStream) {
         task.total = p.segments.size.toLong()
-        task.done = 0
-        p.initUrl?.let { out.write(Http.bytes(it, task, p.initRange)) }
-        for (seg in p.segments) {
-            if (task.cancelRequested) throw InterruptedException()
+        if (task.segmentsDone == 0 && task.committed == 0L) {
+            p.initUrl?.let {
+                val init = retry { Http.bytes(it, task, p.initRange) }
+                out.write(init); out.flush()
+                task.bytes = init.size.toLong(); task.committed = task.bytes
+            }
+        }
+        if (task.segmentsDone > p.segments.size) throw IOException("Stream changed, please restart")
+        task.done = task.segmentsDone.toLong()
+        for (idx in task.segmentsDone until p.segments.size) {
+            if (task.cancelRequested || task.pauseRequested) throw InterruptedException()
+            val seg = p.segments[idx]
             var data = retry { Http.bytes(seg.url, task, seg.range) }
             seg.key?.let { k -> data = decrypt(data, k, seg.seq) }
             out.write(data)
+            out.flush()
             task.bytes += data.size
-            task.done++
+            task.committed = task.bytes
+            task.segmentsDone = idx + 1
+            task.done = task.segmentsDone.toLong()
             DownloadRegistry.changed()
         }
     }
 
     private fun <T> retry(block: () -> T): T {
         var last: Exception? = null
-        repeat(3) { attempt ->
-            try { return block() } catch (e: IOException) { last = e; Thread.sleep(800L * (attempt + 1)) }
+        repeat(4) { attempt ->
+            try { return block() } catch (e: IOException) { last = e; Thread.sleep(1500L * (attempt + 1)) }
         }
         throw last ?: IOException("Failed")
     }

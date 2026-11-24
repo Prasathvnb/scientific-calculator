@@ -80,6 +80,20 @@ object CryptoManager {
         return CipherOutputStream(out, c)
     }
 
+    /** Continues an encrypted file: returns a stream that encrypts from plaintext byte [position]. */
+    fun encryptAppend(ctx: Context, iv: ByteArray, position: Long, out: OutputStream): OutputStream {
+        // CTR mode: encrypting and decrypting are the same operation at a given counter.
+        return CipherOutputStream(out, decryptCipherAt(ctx, iv, position))
+    }
+
+    fun readIv(input: java.io.InputStream): ByteArray {
+        val h = ByteArray(HEADER_SIZE)
+        var n = 0
+        while (n < HEADER_SIZE) { val r = input.read(h, n, HEADER_SIZE - n); if (r < 0) break; n += r }
+        if (!isEncryptedHeader(h)) throw java.io.IOException("Not an encrypted file")
+        return h.copyOfRange(4, 20)
+    }
+
     fun isEncryptedHeader(header: ByteArray): Boolean =
         header.size >= HEADER_SIZE && header.copyOfRange(0, 4).contentEquals(MAGIC)
 

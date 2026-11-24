@@ -69,6 +69,32 @@ object Storage {
         return Target(FileOutputStream(f), f.absolutePath)
     }
 
+    /** Cuts a partly written file back to [keep] bytes and opens it for appending. */
+    fun openAppend(ctx: Context, location: String, keep: Long): OutputStream {
+        return if (location.startsWith("/")) {
+            val f = File(location)
+            if (!f.exists()) throw java.io.FileNotFoundException("Partial file missing")
+            java.io.RandomAccessFile(f, "rw").use { it.setLength(keep) }
+            FileOutputStream(f, true)
+        } else {
+            val uri = Uri.parse(location)
+            ctx.contentResolver.openFileDescriptor(uri, "rw")?.use { android.system.Os.ftruncate(it.fileDescriptor, keep) }
+                ?: throw java.io.FileNotFoundException("Partial file missing")
+            ctx.contentResolver.openOutputStream(uri, "wa") ?: throw java.io.FileNotFoundException("Can't reopen file")
+        }
+    }
+
+    fun length(ctx: Context, location: String): Long =
+        if (location.startsWith("/")) File(location).length()
+        else runCatching { ctx.contentResolver.openFileDescriptor(Uri.parse(location), "r")?.use { it.statSize } ?: -1L }.getOrDefault(-1L)
+
+    fun deleteLocation(ctx: Context, location: String) {
+        runCatching {
+            if (location.startsWith("/")) File(location).delete()
+            else DocumentFile.fromSingleUri(ctx, Uri.parse(location))?.delete()
+        }
+    }
+
     fun openPfd(ctx: Context, location: String): ParcelFileDescriptor? =
         if (location.startsWith("/")) ParcelFileDescriptor.open(File(location), ParcelFileDescriptor.MODE_READ_ONLY)
         else ctx.contentResolver.openFileDescriptor(Uri.parse(location), "r")
