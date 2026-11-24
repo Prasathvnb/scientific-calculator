@@ -117,8 +117,8 @@ class DownloadService : Service() {
     private fun isOnline(): Boolean {
         val cm = getSystemService(android.net.ConnectivityManager::class.java)
         val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
-        return caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-            caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        // Only INTERNET: some networks/VPNs never report "validated".
+        return caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 
     /** Waits up to 30 minutes for a working connection. Returns true when back online. */
